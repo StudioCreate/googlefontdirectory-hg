@@ -1,6 +1,29 @@
 #!/usr/bin/python2.6
+#
+# Copyright 2012, Google Inc.
+# Author: Jeremie Lenfant-Engelmann (jeremiele a google com)
+# Author: Dave Crossland (dcrossland a google com )
+#
+# Copyright (c) 2003, Michael C. Fletcher
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#
+# A script for generating METADATA.json files, using FontForge
+#
+# DC Q: what and where is size calculated?
 
 from datetime import date
+from fontTools import ttLib
 
 import codecs
 import fontforge
@@ -108,6 +131,7 @@ SUPPORTED_SUBSETS = frozenset([
 def usage():
   print >> sys.stderr, "genmetadata.py family_directory"
 
+# DC This should check the NAME table for correct values of the license and licenseurl keys
 def inferLicense(familydir):
   if familydir.find("ufl/") != -1:
     return "UFL"
@@ -122,6 +146,7 @@ def inferStyle(ffont):
     return "normal"
   return "italic"
 
+# DC This should use fontTools not FontForge
 def inferFamilyName(familydir):
   files = os.listdir(familydir)
   for f in files:
@@ -130,6 +155,52 @@ def inferFamilyName(familydir):
       ffont = fontforge.open(filepath)
       return ffont.familyname
 
+def fontToolsOpenFont(filepath):
+  if isinstance(filepath, (str,unicode)):
+    file = open(filepath, 'rb')
+    return ttLib.TTFont(file)
+
+# DC This should check both names match
+def fontToolsGetPSName(ftfont):
+  NAMEID_PSNAME = 6
+  psName = ""
+  for record in ftfont['name'].names:
+    if record.nameID == NAMEID_PSNAME and not psName:
+      if '\000' in record.string:
+        psName = unicode(record.string, 'utf-16-be').encode('utf-8')
+      else:
+        psName = record.string
+    if psName:
+      return psName
+
+# DC This should check both names match
+def fontToolsGetFamilyName(ftfont):
+  NAMEID_FAMILYNAME = 1
+  familyName = ""
+  for record in ftfont['name'].names:
+    if record.nameID == NAMEID_FAMILYNAME and not familyName:
+      if '\000' in record.string:
+        familyName = unicode(record.string, 'utf-16-be').encode('utf-8')
+      else:
+        familyName = record.string
+    if familyName:
+      return familyName
+
+# DC This should check both names match
+def fontToolsGetFullName(ftfont):
+  NAMEID_FULLNAME = 4
+  fullName = ""
+  for record in ftfont['name'].names:
+    if record.nameID == NAMEID_FULLNAME and not fullName:
+      if '\000' in record.string:
+        fullName = unicode(record.string, 'utf-16-be').encode('utf-8')
+      else:
+        fullName = record.string
+    if fullName:
+      return fullName
+
+
+# DC This should use fontTools not FontForge, perhaps using ttfquery code
 def createFonts(familydir, familyname):
   fonts = []
   files = os.listdir(familydir)
@@ -138,15 +209,23 @@ def createFonts(familydir, familyname):
       fontmetadata = InsertOrderedDict()
       filepath = os.path.join(familydir, f)
       ffont = fontforge.open(filepath)
-      fontmetadata["name"] = familyname
+      ftfont = fontToolsOpenFont(filepath)
+    # DC This was previously done with FontForge
+    # fontmetadata["name"] = familyname
+      fontmetadata["name"] = fontToolsGetFamilyName(ftfont)
       fontmetadata["style"] = inferStyle(ffont)
       fontmetadata["weight"] = ffont.os2_weight
       fontmetadata["filename"] = f
-      fontmetadata["postScriptName"] = ffont.fontname
-      fontmetadata["fullName"] = ffont.fullname
+    # DC This was previously done with FontForge
+    # fontmetadata["postScriptName"] = ffont.fontname
+      fontmetadata["postScriptName"] = fontToolsGetPSName(ftfont)
+    # DC This was previously done with FontForge
+    # fontmetadata["fullName"] = ffont.fullname
+      fontmetadata["fullName"] = fontToolsGetFullName(ftfont)
       fonts.append(fontmetadata)
   return fonts
 
+# DC This should also print the subset filesizes and check they are smaller than the original ttf
 def inferSubsets(familydir):
   subsets = set()
   files = os.listdir(familydir)
@@ -164,18 +243,22 @@ def setIfNotPresent(metadata, key, value):
   if key not in metadata:
     metadata[key] = value
 
+# DC Should get this from the font
+def getDesigner():
+  return unicode(raw_input("Designer?\n"))
+
 def genmetadata(familydir):
   metadata = InsertOrderedDict()
   if hasMetadata(familydir):
     metadata = loadMetadata(familydir)
   familyname = inferFamilyName(familydir)
   setIfNotPresent(metadata, "name", familyname)
-  setIfNotPresent(metadata, "designer", "")
+  setIfNotPresent(metadata, "designer", getDesigner())  # DC Should get this from the font or prompt?
   setIfNotPresent(metadata, "license", inferLicense(familydir))
   setIfNotPresent(metadata, "visibility", "Internal")
-  setIfNotPresent(metadata, "category", "")
-  setIfNotPresent(metadata, "size", -1)
-  setIfNotPresent(metadata, "dateAdded", getToday())
+  setIfNotPresent(metadata, "category", "") # DC Should get this from the font or prompt?
+  setIfNotPresent(metadata, "size", -1)  # DC Make this the gzipped filesize of a file passed in as an arg
+  setIfNotPresent(metadata, "dateAdded", getToday())  # DC This is used for the Date Added sort in the GWF Directory - DC to check all existing values in hg repo are correct
   metadata["fonts"] = createFonts(familydir, familyname)
   metadata["subsets"] = inferSubsets(familydir)
   return metadata
@@ -229,8 +312,43 @@ def writeFile(familydir, metadata):
     filename = "METADATA.json.new"
   with codecs.open(os.path.join(familydir, filename), 'w', encoding="utf_8") as f:
     f.write(striplines(json.dumps(metadata, indent=2, ensure_ascii=False)))
+  print json.dumps(metadata, indent=2, ensure_ascii=False)
+
+def ansiprint(string, color):
+  if sys.stdout.isatty():
+    attr = []
+    if color == "green":
+        attr.append('32') # green
+        attr.append('1') # bold
+    else:
+        attr.append('31') # red
+        attr.append('1') # bold
+    print '\x1b[%sm%s\x1b[0m' % (';'.join(attr), string)
+  else:
+    print string
+
+def writeDescHtml(familydir):
+  # DC FontForge can't extract descriptions from NAME tables to write to DESCRIPTION.en_us.html - can fontTools?
+  filename = "DESCRIPTION.en_us.html"
+  if os.path.exists(os.path.join(familydir, filename)):
+    string = filename + " exists - check it is okay"
+    color = "green"
+    ansiprint(string, color)
+    return
+  else:
+    # DC sanitize this raw_input as real HTML
+    descHtml = unicode(raw_input("Description HTML?\n"))
+    if descHtml == "":
+      string = "Create " + filename
+      color = "red"
+      ansiprint(string, color)
+      return
+    with codecs.open(os.path.join(familydir, filename), 'w', encoding="utf_8") as f:
+      f.write(descHtml)
+    print "Created " + filename
 
 def run(familydir):
+ writeDescHtml(familydir)
  writeFile(familydir, genmetadata(familydir))
 
 def main(argv=None):
